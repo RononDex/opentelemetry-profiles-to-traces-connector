@@ -2,7 +2,6 @@ package profilestotraces
 
 import (
 	"context"
-	"fmt"
 
 	"go.uber.org/zap"
 
@@ -50,13 +49,16 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 			scopeProfile := resourceProfile.ScopeProfiles().At(j)
 			newTraceSpan := newResourceTrace.ScopeSpans().AppendEmpty()
 
+			newTraceSpan.Scope().SetName(scopeProfile.Scope().Name())
+			scopeProfile.Scope().Attributes().CopyTo(newTraceSpan.Scope().Attributes())
+
 			for k := 0; k < scopeProfile.Profiles().Len(); k++ {
 				profile := scopeProfile.Profiles().At(k)
-				attrs := profile.Attributes()
-				mapping := attrs.AsRaw()
-
+				newSpan := newTraceSpan.Scope().Attributes().PutEmpty(string(profile.ProfileID().String()))
+				newSpan.SetStr("Test")
 			}
 		}
 	}
+
 	return c.tracesConsumer.ConsumeTraces(ctx, traces)
 }

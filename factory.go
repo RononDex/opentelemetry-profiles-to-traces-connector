@@ -39,6 +39,6 @@ func createProfilesToTraces(ctx context.Context, params connector.Settings, cfg 
 	if err != nil {
 		return nil, err
 	}
-	c.metricsConsumer = nextConsumer
+	c.tracesConsumer = traces
 	return c, nil
 }
