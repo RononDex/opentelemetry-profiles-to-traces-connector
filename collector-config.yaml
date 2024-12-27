@@ -11,14 +11,13 @@ exporters:
   debug:
 
 connectors:
-  profilesToTraces:
+  profilestotraces:
 
 service:
   pipelines:
-    traces:
+    profiles:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [profilesToTraces]
-    metrics:
-      receivers: [profilesToTraces]
+      exporters: [profilestotraces]
+    traces:
+      receivers: [profilestotraces]
       exporters: [debug]
