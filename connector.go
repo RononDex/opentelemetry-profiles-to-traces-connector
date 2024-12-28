@@ -47,18 +47,31 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 
 		for j := 0; j < resourceProfile.ScopeProfiles().Len(); j++ {
 			scopeProfile := resourceProfile.ScopeProfiles().At(j)
-			newTraceSpan := newResourceTrace.ScopeSpans().AppendEmpty()
-
-			newTraceSpan.Scope().SetName(scopeProfile.Scope().Name())
-			scopeProfile.Scope().Attributes().CopyTo(newTraceSpan.Scope().Attributes())
 
 			for k := 0; k < scopeProfile.Profiles().Len(); k++ {
 				profile := scopeProfile.Profiles().At(k)
-				newSpan := newTraceSpan.Scope().Attributes().PutEmpty(string(profile.ProfileID().String()))
-				newSpan.SetStr("Test")
+
+				for l := 0; l < profile.Sample().Len(); l++ {
+					sample := profile.Sample().At(l)
+					newTraceSpan := newResourceTrace.ScopeSpans().AppendEmpty()
+
+					copyAttributes(sample, profile, newTraceSpan)
+				}
+
 			}
 		}
 	}
 
 	return c.tracesConsumer.ConsumeTraces(ctx, traces)
+}
+
+func copyAttributes(sample pprofile.Sample, profile pprofile.Profile, newTraceSpan ptrace.ScopeSpans) {
+	for m := 0; m < sample.AttributeIndices().Len(); m++ {
+		attributeTableEntry := profile.AttributeTable().At(int(sample.AttributeIndices().At(m)))
+		if attributeTableEntry.Key() == "process.executable.path" {
+			newTraceSpan.Scope().SetName(attributeTableEntry.Value().Str())
+		}
+		newAttribute := newTraceSpan.Scope().Attributes().PutEmpty(attributeTableEntry.Key())
+		attributeTableEntry.Value().CopyTo(newAttribute)
+	}
 }
