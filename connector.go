@@ -101,7 +101,7 @@ func setProfileAttributes(profile pprofile.Profile, profileSpan ptrace.Span) {
 func copyLocations(sample pprofile.Sample, profile pprofile.Profile, profileSpan ptrace.Span, scopeSpans ptrace.ScopeSpans, traceId pcommon.TraceID) {
 	locationIdxOffset := sample.LocationsStartIndex()
 	parentSpanId := profileSpan.SpanID()
-	for locationIdx := sample.LocationsLength(); locationIdx >= 0; locationIdx-- {
+	for locationIdx := sample.LocationsLength() - 1; locationIdx >= 0; locationIdx-- {
 		location := profile.LocationTable().At(int(locationIdx) + int(locationIdxOffset))
 
 		locationSpan := scopeSpans.Spans().AppendEmpty()

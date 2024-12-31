@@ -6,21 +6,45 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+processors:
+  batch:
+
+extensions:
+  basicauth:
+    client_auth:
+      username: elastic
+      password: "_=BTqKAdVlW=Lj3F--p+"           # Replace with your password
+
 exporters:
   # NOTE: Prior to v0.86.0 use the `logging` instead of `debug`.
   debug:
     verbosity: detailed
     sampling_initial: 5
     sampling_thereafter: 200
+  otlp:
+    endpoint: localhost:4800
+    tls:
+      insecure: true
+  elasticsearch:
+    endpoints: ["http://localhost:9200"] # Replace with your Elasticsearch URL
+    index: "otel-traces"
+    tls:
+      insecure_skip_verify: true
+    auth:
+      authenticator: basicauth
+
+
 
 connectors:
   profilestotraces:
 
 service:
+  extensions: [basicauth]
   pipelines:
     profiles:
       receivers: [otlp]
-      exporters: [profilestotraces, debug]
+      exporters: [profilestotraces]
     traces:
       receivers: [profilestotraces]
-      exporters: [debug]
+      processors: [batch]
+      exporters: [elasticsearch]
