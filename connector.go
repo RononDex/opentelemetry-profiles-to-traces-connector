@@ -62,6 +62,7 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 				profileSpan.SetName("Profile_" + profile.ProfileID().String())
 				profileSpan.SetSpanID(createNewSpanId())
 				profileSpan.SetKind(ptrace.SpanKindInternal)
+				profileSpan.SetStartTimestamp(profile.StartTime())
 				profile.Attributes().CopyTo(profileSpan.Attributes())
 				setProfileAttributes(profile, profileSpan)
 
@@ -73,6 +74,7 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 					sampleSpan.SetName("Sample")
 					sampleSpan.SetKind(ptrace.SpanKindInternal)
 					sampleSpan.SetParentSpanID(profileSpan.SpanID())
+					sampleSpan.SetStartTimestamp(sample.TimestampsUnixNano().At(0))
 
 					copyAttributes(sample.AttributeIndices(), profile.AttributeTable(), sampleSpan)
 					copyLocations(sample, profile, profileSpan, scopeSpans, traceId)

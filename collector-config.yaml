@@ -8,6 +8,8 @@ receivers:
 
 processors:
   batch:
+    send_batch_size: 10000
+    timeout: 0s
 
 # extensions:
 #   basicauth:
@@ -27,9 +29,14 @@ exporters:
       insecure: true
   elasticsearch:
     endpoints: ["http://localhost:9200"] # Replace with your Elasticsearch URL
-    index: "otel-traces"
+    traces_index: "otel-traces"
+    mapping: 
+      mode: none
     tls:
       insecure_skip_verify: true
+    telemetry:
+      log_response_body: true
+      log_request_body: true
     # auth:
     #   authenticator: basicauth
 
@@ -44,5 +51,8 @@ service:
       exporters: [profilestotraces]
     traces:
       receivers: [profilestotraces]
-      # processors: [batch]
+      processors: [batch]
       exporters: [elasticsearch]
+  telemetry:
+    logs:
+      level: debug
