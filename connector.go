@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"strconv"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -13,6 +14,15 @@ import (
 	"go.opentelemetry.io/collector/pdata/pprofile"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
+
+// Profile signal documentation:
+// 	    https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/profiles/0239-profiles-data-model.md#message-profile
+// Grafana data needed for flamegraph:
+//      https://grafana.com/docs/grafana/latest/panels-visualizations/visualizations/flame-graph/
+// TODO:
+//   - Create graph structure
+//   - Edge cases: Location without sample value --> take value from lower location
+//   - Create one Span per location
 
 // schema for connector
 type connectorImp struct {
@@ -74,10 +84,15 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 					sampleSpan.SetName("Sample")
 					sampleSpan.SetKind(ptrace.SpanKindInternal)
 					sampleSpan.SetParentSpanID(profileSpan.SpanID())
-					sampleSpan.SetStartTimestamp(sample.TimestampsUnixNano().At(0))
+					sampleSpan.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Unix(0, int64(sample.TimestampsUnixNano().At(0)))))
 
 					copyAttributes(sample.AttributeIndices(), profile.AttributeTable(), sampleSpan)
-					copyLocations(sample, profile, profileSpan, scopeSpans, traceId)
+
+					// Grafana compliant attributes
+					sampleSpan.Attributes().PutInt("value", sample.Value().At(0))
+					sampleSpan.Attributes().PutInt("level", int64(sample.LocationsLength()))
+					sampleSpan.Attributes().PutStr("label")
+					// copyLocations(sample, profile, profileSpan, scopeSpans, traceId)
 				}
 			}
 		}
@@ -111,6 +126,7 @@ func copyLocations(sample pprofile.Sample, profile pprofile.Profile, profileSpan
 		locationSpan.SetSpanID(createNewSpanId())
 		locationSpan.SetParentSpanID(parentSpanId)
 		locationSpan.SetName("Location")
+		locationSpan.SetStartTimestamp(profileSpan.StartTimestamp())
 
 		if location.Line().Len() > 0 {
 			line := location.Line().At(0)
@@ -120,6 +136,7 @@ func copyLocations(sample pprofile.Sample, profile pprofile.Profile, profileSpan
 			locationSpan.Attributes().PutInt("location.lineNr", line.Line())
 			locationSpan.Attributes().PutInt("location.columnNr", line.Column())
 			locationSpan.Attributes().PutStr("location.functionName", functionName)
+			locationSpan.Attributes().PutDouble("value", float64(profile.Duration()))
 		}
 		if location.HasMappingIndex() {
 			mappingIdx := location.MappingIndex()

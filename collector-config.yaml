@@ -35,8 +35,8 @@ exporters:
     tls:
       insecure_skip_verify: true
     telemetry:
-      log_response_body: true
-      log_request_body: true
+      # log_response_body: true
+      # log_request_body: true
     # auth:
     #   authenticator: basicauth
 
