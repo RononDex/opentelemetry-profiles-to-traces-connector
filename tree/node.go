@@ -1,4 +1,6 @@
-package profilestotraces
+package tree
 
-type Node[T struct{}] struct {
+type Node[T interface{}] struct {
+	SubNodes []Node[T]
+	Value    T
 }

@@ -1,5 +1,5 @@
-package profilestotraces
+package tree
 
-type Tree[T struct{}] struct {
-	rootNode Node[T]
+type Tree[T interface{}] struct {
+	RootNode Node[T]
 }

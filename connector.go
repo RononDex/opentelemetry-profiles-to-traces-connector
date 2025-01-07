@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/RononDex/profilestotracesconnector/internal"
+	"github.com/RononDex/profilestotracesconnector/tree"
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/component"
@@ -66,6 +68,8 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 			scopeProfile.Scope().Attributes().CopyTo(scopeSpans.Scope().Attributes())
 
 			for k := 0; k < scopeProfile.Profiles().Len(); k++ {
+				profileTree := tree.Tree[internal.SampleLocation]{}
+				profileTree.RootNode = tree.Node[internal.SampleLocation]{}
 				profile := scopeProfile.Profiles().At(k)
 				profileSpan := scopeSpans.Spans().AppendEmpty()
 				profileSpan.SetTraceID(traceId)
@@ -86,13 +90,11 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 					sampleSpan.SetParentSpanID(profileSpan.SpanID())
 					sampleSpan.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Unix(0, int64(sample.TimestampsUnixNano().At(0)))))
 
-					copyAttributes(sample.AttributeIndices(), profile.AttributeTable(), sampleSpan)
-
 					// Grafana compliant attributes
 					sampleSpan.Attributes().PutInt("value", sample.Value().At(0))
 					sampleSpan.Attributes().PutInt("level", int64(sample.LocationsLength()))
-					sampleSpan.Attributes().PutStr("label")
-					// copyLocations(sample, profile, profileSpan, scopeSpans, traceId)
+					// sampleSpan.Attributes().PutStr("label")
+					copyLocationsToTree(sample, profile, profileSpan, scopeSpans, traceId, profileTree)
 				}
 			}
 		}
@@ -115,49 +117,58 @@ func setProfileAttributes(profile pprofile.Profile, profileSpan ptrace.Span) {
 	}
 }
 
-func copyLocations(sample pprofile.Sample, profile pprofile.Profile, profileSpan ptrace.Span, scopeSpans ptrace.ScopeSpans, traceId pcommon.TraceID) {
+func copyLocationsToTree(sample pprofile.Sample, profile pprofile.Profile, profileSpan ptrace.Span, scopeSpans ptrace.ScopeSpans, traceId pcommon.TraceID, sampleTree tree.Tree[internal.SampleLocation]) {
 	locationIdxOffset := sample.LocationsStartIndex()
 	parentSpanId := profileSpan.SpanID()
-	for locationIdx := sample.LocationsLength() - 1; locationIdx >= 0; locationIdx-- {
+	currentNode := sampleTree.RootNode
+
+	for locationIdx := 0; locationIdx < int(sample.LocationsLength()); locationIdx++ {
 		location := profile.LocationTable().At(int(locationIdx) + int(locationIdxOffset))
-
-		locationSpan := scopeSpans.Spans().AppendEmpty()
-		locationSpan.SetTraceID(traceId)
-		locationSpan.SetSpanID(createNewSpanId())
-		locationSpan.SetParentSpanID(parentSpanId)
-		locationSpan.SetName("Location")
-		locationSpan.SetStartTimestamp(profileSpan.StartTimestamp())
-
+		functionName := strconv.FormatUint(location.Address(), 10)
 		if location.Line().Len() > 0 {
-			line := location.Line().At(0)
-			functionName := profile.StringTable().At(int(profile.FunctionTable().At(int(line.FunctionIndex())).NameStrindex()))
-
-			locationSpan.SetName(functionName)
-			locationSpan.Attributes().PutInt("location.lineNr", line.Line())
-			locationSpan.Attributes().PutInt("location.columnNr", line.Column())
-			locationSpan.Attributes().PutStr("location.functionName", functionName)
-			locationSpan.Attributes().PutDouble("value", float64(profile.Duration()))
-		}
-		if location.HasMappingIndex() {
-			mappingIdx := location.MappingIndex()
-			mapping := profile.MappingTable().At(int(mappingIdx))
-
-			if mapping.HasFilenames() {
-				locationSpan.Attributes().PutStr("mapping.fileName", profile.StringTable().At(int(mapping.FilenameStrindex())))
-			}
+			functionName = profile.StringTable().At(int(profile.FunctionTable().At(int(location.Line().At(0).FunctionIndex())).NameStrindex()))
 		}
 
-		copyAttributes(location.AttributeIndices(), profile.AttributeTable(), locationSpan)
+		subNode := findSubNodeByLabel(currentNode, functionName)
+		if subNode == nil {
+			newNode := tree.Node[internal.SampleLocation]{}
+			currentNode.SubNodes = append(currentNode.SubNodes, newNode)
+			newNode.Value = internal.SampleLocation{}
+			newNode.Value.Label = functionName
+			newNode.Value.Level = int64(locationIdx)
+			newNode.Value.Attributes = pcommon.Map{}
+			newNode.Value.DurationInNs = 0
 
-		parentSpanId = locationSpan.SpanID()
+			subNode = &newNode
+		}
+
+		if locationIdx == int(sample.LocationsLength())-1 {
+			subNode.Value.DurationInNs = sample.Value().At(0)
+			copyAttributes(sample.AttributeIndices(), profile.AttributeTable(), subNode.Value.Attributes)
+		}
+
+		currentNode = *subNode
 	}
 }
 
-func copyAttributes(attributeIndices pcommon.Int32Slice, attributeTable pprofile.AttributeTableSlice, targetSpan ptrace.Span) {
+func findSubNodeByLabel(sampleNode tree.Node[internal.SampleLocation], label string) *tree.Node[internal.SampleLocation] {
+	for nodeIdx := 0; nodeIdx < len(sampleNode.SubNodes); nodeIdx++ {
+		if sampleNode.SubNodes[nodeIdx].Value.Label == label {
+			return &sampleNode.SubNodes[nodeIdx]
+		}
+	}
+
+	return nil
+}
+
+func copyAttributes(attributeIndices pcommon.Int32Slice, attributeTable pprofile.AttributeTableSlice, targetAttributes pcommon.Map) {
 	for m := 0; m < attributeIndices.Len(); m++ {
 		attributeTableEntry := attributeTable.At(int(attributeIndices.At(m)))
-		newAttribute := targetSpan.Attributes().PutEmpty(attributeTableEntry.Key())
-		attributeTableEntry.Value().CopyTo(newAttribute)
+		_, exists := targetAttributes.Get(attributeTableEntry.Key())
+		if !exists {
+			newAttribute := targetAttributes.PutEmpty(attributeTableEntry.Key())
+			attributeTableEntry.Value().CopyTo(newAttribute)
+		}
 	}
 }
 
