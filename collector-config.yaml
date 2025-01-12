@@ -31,7 +31,7 @@ exporters:
     endpoints: ["http://localhost:9200"] # Replace with your Elasticsearch URL
     traces_index: "otel-traces"
     mapping: 
-      mode: none
+      mode: otel
     tls:
       insecure_skip_verify: true
     telemetry:
@@ -51,8 +51,8 @@ service:
       exporters: [profilestotraces]
     traces:
       receivers: [profilestotraces]
-      processors: [batch]
-      exporters: [elasticsearch]
+      # processors: [batch]
+      exporters: [elasticsearch, debug]
   telemetry:
     logs:
       level: debug

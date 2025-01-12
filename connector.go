@@ -68,8 +68,6 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 			scopeProfile.Scope().Attributes().CopyTo(scopeSpans.Scope().Attributes())
 
 			for k := 0; k < scopeProfile.Profiles().Len(); k++ {
-				profileTree := tree.Tree[internal.SampleLocation]{}
-				profileTree.RootNode = tree.Node[internal.SampleLocation]{}
 				profile := scopeProfile.Profiles().At(k)
 				profileSpan := scopeSpans.Spans().AppendEmpty()
 				profileSpan.SetTraceID(traceId)
@@ -78,24 +76,21 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 				profileSpan.SetKind(ptrace.SpanKindInternal)
 				profileSpan.SetStartTimestamp(profile.StartTime())
 				profile.Attributes().CopyTo(profileSpan.Attributes())
-				setProfileAttributes(profile, profileSpan)
+				profileTree := tree.Tree[internal.SampleLocation]{}
+				profileTree.RootNode = tree.Node[internal.SampleLocation]{}
+				profileTree.RootNode.Value = internal.SampleLocation{}
+				profileTree.RootNode.Value.ParentSpanId = profileSpan.SpanID()
+				setProfileAttributes(&profile, &profileSpan)
 
 				for l := 0; l < profile.Sample().Len(); l++ {
 					sample := profile.Sample().At(l)
-					sampleSpan := scopeSpans.Spans().AppendEmpty()
-					sampleSpan.SetTraceID(traceId)
-					sampleSpan.SetSpanID(createNewSpanId())
-					sampleSpan.SetName("Sample")
-					sampleSpan.SetKind(ptrace.SpanKindInternal)
-					sampleSpan.SetParentSpanID(profileSpan.SpanID())
-					sampleSpan.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Unix(0, int64(sample.TimestampsUnixNano().At(0)))))
-
-					// Grafana compliant attributes
-					sampleSpan.Attributes().PutInt("value", sample.Value().At(0))
-					sampleSpan.Attributes().PutInt("level", int64(sample.LocationsLength()))
-					// sampleSpan.Attributes().PutStr("label")
-					copyLocationsToTree(sample, profile, profileSpan, scopeSpans, traceId, profileTree)
+					copyLocationsToTree(&sample, &profile, &profileSpan, &profileTree)
+					// tree.DumpTree(&profileTree)
 				}
+
+				calculateSelfValues(&profileTree)
+
+				ingestSampleSpans(&profileTree, scopeSpans, traceId)
 			}
 		}
 	}
@@ -103,7 +98,34 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 	return c.tracesConsumer.ConsumeTraces(ctx, traces)
 }
 
-func setProfileAttributes(profile pprofile.Profile, profileSpan ptrace.Span) {
+func ingestSampleSpans(profileTree *tree.Tree[internal.SampleLocation], scopeSpans ptrace.ScopeSpans, traceId pcommon.TraceID) {
+	rootNode := profileTree.RootNode
+	ingestNodeRecursive(&rootNode, &scopeSpans, traceId)
+}
+
+func ingestNodeRecursive(currentNode *tree.Node[internal.SampleLocation], scopeSpans *ptrace.ScopeSpans, traceId pcommon.TraceID) {
+	// Depth first
+	for subNodeIdx := 0; subNodeIdx < len(currentNode.SubNodes); subNodeIdx++ {
+		subNode := currentNode.SubNodes[subNodeIdx]
+		ingestNodeRecursive(&subNode, scopeSpans, traceId)
+	}
+
+	sampleSpan := scopeSpans.Spans().AppendEmpty()
+	sampleSpan.SetTraceID(traceId)
+	sampleSpan.SetSpanID(createNewSpanId())
+	sampleSpan.SetName("Sample")
+	sampleSpan.SetKind(ptrace.SpanKindInternal)
+	sampleSpan.SetParentSpanID(currentNode.Value.ParentSpanId)
+	sampleSpan.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Unix(0, int64(currentNode.Value.StartTimeStamp))))
+
+	// Grafana compliant attributes
+	sampleSpan.Attributes().PutInt("value", currentNode.Value.DurationInNs)
+	sampleSpan.Attributes().PutInt("level", currentNode.Value.Level)
+	sampleSpan.Attributes().PutStr("label", currentNode.Value.Label)
+	sampleSpan.Attributes().PutInt("self", currentNode.Value.Self)
+}
+
+func setProfileAttributes(profile *pprofile.Profile, profileSpan *ptrace.Span) {
 	profileSpan.Attributes().PutStr("profile.time", profile.Time().String())
 	profileSpan.Attributes().PutInt("profile.period", profile.Period())
 	profileSpan.Attributes().PutStr("profile.duration", profile.Duration().String())
@@ -117,7 +139,7 @@ func setProfileAttributes(profile pprofile.Profile, profileSpan ptrace.Span) {
 	}
 }
 
-func copyLocationsToTree(sample pprofile.Sample, profile pprofile.Profile, profileSpan ptrace.Span, scopeSpans ptrace.ScopeSpans, traceId pcommon.TraceID, sampleTree tree.Tree[internal.SampleLocation]) {
+func copyLocationsToTree(sample *pprofile.Sample, profile *pprofile.Profile, profileSpan *ptrace.Span, sampleTree *tree.Tree[internal.SampleLocation]) {
 	locationIdxOffset := sample.LocationsStartIndex()
 	parentSpanId := profileSpan.SpanID()
 	currentNode := sampleTree.RootNode
@@ -136,8 +158,10 @@ func copyLocationsToTree(sample pprofile.Sample, profile pprofile.Profile, profi
 			newNode.Value = internal.SampleLocation{}
 			newNode.Value.Label = functionName
 			newNode.Value.Level = int64(locationIdx)
-			newNode.Value.Attributes = pcommon.Map{}
+			newNode.Value.Attributes = pcommon.NewMap()
 			newNode.Value.DurationInNs = 0
+			newNode.Value.ParentSpanId = parentSpanId
+			newNode.Value.StartTimeStamp = pcommon.Timestamp(sample.TimestampsUnixNano().At(0))
 
 			subNode = &newNode
 		}
@@ -149,6 +173,26 @@ func copyLocationsToTree(sample pprofile.Sample, profile pprofile.Profile, profi
 
 		currentNode = *subNode
 	}
+}
+
+func calculateSelfValues(profileTree *tree.Tree[internal.SampleLocation]) {
+	rootNode := profileTree.RootNode
+
+	calculateSelfValueRecursive(&rootNode)
+}
+
+func calculateSelfValueRecursive(currentNode *tree.Node[internal.SampleLocation]) int64 {
+	sum := int64(0)
+	// Depth first
+	for subNodeIdx := 0; subNodeIdx < len(currentNode.SubNodes); subNodeIdx++ {
+		subNode := currentNode.SubNodes[subNodeIdx]
+
+		sum += calculateSelfValueRecursive(&subNode)
+	}
+
+	currentNode.Value.Self = currentNode.Value.DurationInNs - sum
+
+	return sum
 }
 
 func findSubNodeByLabel(sampleNode tree.Node[internal.SampleLocation], label string) *tree.Node[internal.SampleLocation] {
