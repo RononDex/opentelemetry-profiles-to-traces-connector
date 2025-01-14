@@ -8,6 +8,7 @@ type SampleLocation struct {
 	Level          int64
 	Self           int64
 	StartTimeStamp pcommon.Timestamp
+	EndTimeStamp   pcommon.Timestamp
 	Attributes     pcommon.Map
 	ParentSpanId   pcommon.SpanID
 }

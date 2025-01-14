@@ -75,20 +75,21 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 				profileSpan.SetSpanID(createNewSpanId())
 				profileSpan.SetKind(ptrace.SpanKindInternal)
 				profileSpan.SetStartTimestamp(profile.StartTime())
+				profileSpan.SetEndTimestamp(profile.StartTime() + profile.Duration())
 				profile.Attributes().CopyTo(profileSpan.Attributes())
 				profileTree := tree.Tree[internal.SampleLocation]{}
-				profileTree.RootNode = tree.Node[internal.SampleLocation]{}
-				profileTree.RootNode.Value = internal.SampleLocation{}
+				profileTree.RootNode = &tree.Node[internal.SampleLocation]{}
+				profileTree.RootNode.Value = &internal.SampleLocation{}
 				profileTree.RootNode.Value.ParentSpanId = profileSpan.SpanID()
 				setProfileAttributes(&profile, &profileSpan)
 
 				for l := 0; l < profile.Sample().Len(); l++ {
 					sample := profile.Sample().At(l)
 					copyLocationsToTree(&sample, &profile, &profileSpan, &profileTree)
-					// tree.DumpTree(&profileTree)
 				}
 
 				calculateSelfValues(&profileTree)
+				tree.DumpTree(&profileTree)
 
 				ingestSampleSpans(&profileTree, scopeSpans, traceId)
 			}
@@ -100,14 +101,14 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 
 func ingestSampleSpans(profileTree *tree.Tree[internal.SampleLocation], scopeSpans ptrace.ScopeSpans, traceId pcommon.TraceID) {
 	rootNode := profileTree.RootNode
-	ingestNodeRecursive(&rootNode, &scopeSpans, traceId)
+	ingestNodeRecursive(rootNode, &scopeSpans, traceId)
 }
 
 func ingestNodeRecursive(currentNode *tree.Node[internal.SampleLocation], scopeSpans *ptrace.ScopeSpans, traceId pcommon.TraceID) {
 	// Depth first
 	for subNodeIdx := 0; subNodeIdx < len(currentNode.SubNodes); subNodeIdx++ {
 		subNode := currentNode.SubNodes[subNodeIdx]
-		ingestNodeRecursive(&subNode, scopeSpans, traceId)
+		ingestNodeRecursive(subNode, scopeSpans, traceId)
 	}
 
 	sampleSpan := scopeSpans.Spans().AppendEmpty()
@@ -117,6 +118,7 @@ func ingestNodeRecursive(currentNode *tree.Node[internal.SampleLocation], scopeS
 	sampleSpan.SetKind(ptrace.SpanKindInternal)
 	sampleSpan.SetParentSpanID(currentNode.Value.ParentSpanId)
 	sampleSpan.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Unix(0, int64(currentNode.Value.StartTimeStamp))))
+	sampleSpan.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Unix(0, int64(currentNode.Value.EndTimeStamp))))
 
 	// Grafana compliant attributes
 	sampleSpan.Attributes().PutInt("value", currentNode.Value.DurationInNs)
@@ -154,31 +156,34 @@ func copyLocationsToTree(sample *pprofile.Sample, profile *pprofile.Profile, pro
 		subNode := findSubNodeByLabel(currentNode, functionName)
 		if subNode == nil {
 			newNode := tree.Node[internal.SampleLocation]{}
-			currentNode.SubNodes = append(currentNode.SubNodes, newNode)
-			newNode.Value = internal.SampleLocation{}
+			newNode.Value = &internal.SampleLocation{}
 			newNode.Value.Label = functionName
 			newNode.Value.Level = int64(locationIdx)
 			newNode.Value.Attributes = pcommon.NewMap()
 			newNode.Value.DurationInNs = 0
 			newNode.Value.ParentSpanId = parentSpanId
 			newNode.Value.StartTimeStamp = pcommon.Timestamp(sample.TimestampsUnixNano().At(0))
+			newNode.Value.EndTimeStamp = pcommon.Timestamp(sample.TimestampsUnixNano().At(sample.TimestampsUnixNano().Len() - 1))
 
-			subNode = &newNode
+			currentNode.SubNodes = append(currentNode.SubNodes, &newNode)
+
+			subNode = currentNode.SubNodes[len(currentNode.SubNodes)-1]
 		}
 
 		if locationIdx == int(sample.LocationsLength())-1 {
-			subNode.Value.DurationInNs = sample.Value().At(0)
-			copyAttributes(sample.AttributeIndices(), profile.AttributeTable(), subNode.Value.Attributes)
+			subNode.Value.DurationInNs = int64(sample.TimestampsUnixNano().At(sample.TimestampsUnixNano().Len()-1) - sample.TimestampsUnixNano().At(0))
+			copyAttributes(sample.AttributeIndices(), profile.AttributeTable(), &subNode.Value.Attributes)
+			// fmt.Println("Last Location!!    " + strconv.Itoa(int(subNode.Value.DurationInNs)) + " value: " + strconv.Itoa(int(sample.Value().At(0))))
 		}
 
-		currentNode = *subNode
+		currentNode = subNode
 	}
 }
 
 func calculateSelfValues(profileTree *tree.Tree[internal.SampleLocation]) {
 	rootNode := profileTree.RootNode
 
-	calculateSelfValueRecursive(&rootNode)
+	calculateSelfValueRecursive(rootNode)
 }
 
 func calculateSelfValueRecursive(currentNode *tree.Node[internal.SampleLocation]) int64 {
@@ -187,25 +192,39 @@ func calculateSelfValueRecursive(currentNode *tree.Node[internal.SampleLocation]
 	for subNodeIdx := 0; subNodeIdx < len(currentNode.SubNodes); subNodeIdx++ {
 		subNode := currentNode.SubNodes[subNodeIdx]
 
-		sum += calculateSelfValueRecursive(&subNode)
+		sum += calculateSelfValueRecursive(subNode)
 	}
 
-	currentNode.Value.Self = currentNode.Value.DurationInNs - sum
+	if sum == 0 {
+		sum = currentNode.Value.DurationInNs
+	}
 
-	return sum
+	if currentNode.Value.DurationInNs == 0 {
+		currentNode.Value.DurationInNs = sum
+	}
+
+	if len(currentNode.SubNodes) == 0 {
+		// Use a minimal value of 1
+		currentNode.Value.Self = max(sum, 1)
+		currentNode.Value.DurationInNs = max(currentNode.Value.DurationInNs, 1)
+	} else {
+		currentNode.Value.Self = max(currentNode.Value.DurationInNs-sum, 0)
+	}
+
+	return max(sum, 1)
 }
 
-func findSubNodeByLabel(sampleNode tree.Node[internal.SampleLocation], label string) *tree.Node[internal.SampleLocation] {
+func findSubNodeByLabel(sampleNode *tree.Node[internal.SampleLocation], label string) *tree.Node[internal.SampleLocation] {
 	for nodeIdx := 0; nodeIdx < len(sampleNode.SubNodes); nodeIdx++ {
 		if sampleNode.SubNodes[nodeIdx].Value.Label == label {
-			return &sampleNode.SubNodes[nodeIdx]
+			return sampleNode.SubNodes[nodeIdx]
 		}
 	}
 
 	return nil
 }
 
-func copyAttributes(attributeIndices pcommon.Int32Slice, attributeTable pprofile.AttributeTableSlice, targetAttributes pcommon.Map) {
+func copyAttributes(attributeIndices pcommon.Int32Slice, attributeTable pprofile.AttributeTableSlice, targetAttributes *pcommon.Map) {
 	for m := 0; m < attributeIndices.Len(); m++ {
 		attributeTableEntry := attributeTable.At(int(attributeIndices.At(m)))
 		_, exists := targetAttributes.Get(attributeTableEntry.Key())
