@@ -81,6 +81,11 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 				profileTree.RootNode = &tree.Node[internal.SampleLocation]{}
 				profileTree.RootNode.Value = &internal.SampleLocation{}
 				profileTree.RootNode.Value.ParentSpanId = profileSpan.SpanID()
+				profileTree.RootNode.Value.Level = 0
+				profileTree.RootNode.Value.Label = "Root"
+				profileTree.RootNode.Value.StartTimeStamp = profileSpan.StartTimestamp()
+				profileTree.RootNode.Value.EndTimeStamp = profileSpan.EndTimestamp()
+
 				setProfileAttributes(&profile, &profileSpan)
 
 				for l := 0; l < profile.Sample().Len(); l++ {
@@ -89,7 +94,7 @@ func (c *connectorImp) ConsumeProfiles(ctx context.Context, profiles pprofile.Pr
 				}
 
 				calculateSelfValues(&profileTree)
-				tree.DumpTree(&profileTree)
+				// tree.DumpTree(&profileTree)
 
 				ingestSampleSpans(&profileTree, scopeSpans, traceId)
 			}
@@ -105,11 +110,6 @@ func ingestSampleSpans(profileTree *tree.Tree[internal.SampleLocation], scopeSpa
 }
 
 func ingestNodeRecursive(currentNode *tree.Node[internal.SampleLocation], scopeSpans *ptrace.ScopeSpans, traceId pcommon.TraceID) {
-	// Depth first
-	for subNodeIdx := 0; subNodeIdx < len(currentNode.SubNodes); subNodeIdx++ {
-		subNode := currentNode.SubNodes[subNodeIdx]
-		ingestNodeRecursive(subNode, scopeSpans, traceId)
-	}
 
 	sampleSpan := scopeSpans.Spans().AppendEmpty()
 	sampleSpan.SetTraceID(traceId)
@@ -125,6 +125,12 @@ func ingestNodeRecursive(currentNode *tree.Node[internal.SampleLocation], scopeS
 	sampleSpan.Attributes().PutInt("level", currentNode.Value.Level)
 	sampleSpan.Attributes().PutStr("label", currentNode.Value.Label)
 	sampleSpan.Attributes().PutInt("self", currentNode.Value.Self)
+
+	// Wide first
+	for subNodeIdx := 0; subNodeIdx < len(currentNode.SubNodes); subNodeIdx++ {
+		subNode := currentNode.SubNodes[subNodeIdx]
+		ingestNodeRecursive(subNode, scopeSpans, traceId)
+	}
 }
 
 func setProfileAttributes(profile *pprofile.Profile, profileSpan *ptrace.Span) {
@@ -158,7 +164,7 @@ func copyLocationsToTree(sample *pprofile.Sample, profile *pprofile.Profile, pro
 			newNode := tree.Node[internal.SampleLocation]{}
 			newNode.Value = &internal.SampleLocation{}
 			newNode.Value.Label = functionName
-			newNode.Value.Level = int64(locationIdx)
+			newNode.Value.Level = int64(locationIdx + 1)
 			newNode.Value.Attributes = pcommon.NewMap()
 			newNode.Value.DurationInNs = 0
 			newNode.Value.ParentSpanId = parentSpanId
