@@ -28,33 +28,33 @@ exporters:
     endpoint: "localhost:4040"
     tls:
       insecure: true
-  # elasticsearch:
-  #   endpoints: ["http://localhost:9200"] # Replace with your Elasticsearch URL
-  #   traces_index: "otel-traces"
-  #   mapping: 
-  #     # mode: otel
-  #     mode: raw
-  #   tls:
-  #     insecure_skip_verify: true
-  #   telemetry:
+  elasticsearch:
+    endpoints: ["http://localhost:9200"] # Replace with your Elasticsearch URL
+    traces_index: "otel-traces"
+    mapping: 
+      # mode: otel
+      mode: raw
+    tls:
+      insecure_skip_verify: true
+    telemetry:
       # log_response_body: true
       # log_request_body: true
     # auth:
     #   authenticator: basicauth
 
 connectors:
-  # profilestotraces:
+  profilestotraces:
 
 service:
   # extensions: [basicauth]
   pipelines:
     profiles:
       receivers: [otlp]
-      exporters: [otlp]
-    # traces:
-    #   receivers: [profilestotraces]
-    #   # processors: [batch]
-    #   exporters: [elasticsearch, otlp]
+      exporters: [otlp, profilestotraces]
+    traces:
+      receivers: [profilestotraces]
+      # processors: [batch]
+      exporters: [elasticsearch]
   telemetry:
     logs:
       level: debug
